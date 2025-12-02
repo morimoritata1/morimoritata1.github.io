@@ -1,0 +1,30 @@
+{
+  "week_start": "2025-12-01",
+  "week_end": "2025-12-07",
+  "events": {
+    "Monday": [
+      {
+        "title": "会議",
+        "start": "10:00",
+        "end": "11:00",
+        "location": "東京オフィス"
+      }
+    ],
+    "Tuesday": [
+      {
+        "title": "打ち合わせ",
+        "start": "09:00",
+        "end": "10:30",
+        "location": "Zoom"
+      }
+    ]
+  },
+  "outside_hours": [
+    {
+      "title": "深夜作業",
+      "start": "23:00",
+      "end": "01:00",
+      "location": "自宅"
+    }
+  ]
+}

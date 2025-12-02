@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>週間カレンダー</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="calendar-header">
+  <h1>週間スケジュール</h1>
+  <div class="header-placeholder">会社ロゴやタイトルをここに追加可能</div>
+</header>
+<div id="calendar-container">
+  <table id="calendar">
+    <thead>
+      <tr>
+        <th>時間</th>
+        <th>月</th>
+        <th>火</th>
+        <th>水</th>
+        <th>木</th>
+        <th>金</th>
+        <th>土</th>
+        <th>日</th>
+      </tr>
+    </thead>
+    <tbody id="calendar-body">
+      <!-- JSで時間軸とイベントを埋め込む -->
+    </tbody>
+  </table>
+</div>
+<section id="outside-hours">
+  <h3>時間外イベント</h3>
+  <ul id="outside-list"></ul>
+</section>
+<footer id="calendar-footer">
+  <div class="footer-placeholder">フッター情報（印刷日、担当者名など）をここに追加可能</div>
+</footer>
+<script src="script.js"></script>
+</body>
+</html>
