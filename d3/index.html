@@ -5,7 +5,8 @@
   <meta charset="utf-8" />
   <title>d3.csv＋階層型サンキーダイアグラム（クリック展開）</title>
   <!-- D3 v7 -->
-  <script src="d3-sankey.min.js" defer></script>
+<script src="https://d3js.org/d3.v4.js" charset="utf-8"></script>
+<script src="d3-sankey-diagram.min.js" charset="utf-8"></script>
   <style>
     body { font-family: "Noto Sans JP", "Segoe UI", sans-serif; margin: 24px; }
     #header { margin-bottom: 12px; }
@@ -20,7 +21,7 @@
 </head>
 <body>
   <div id="header">
-    <div class="legend">ノードをクリックすると詳細を展開／折りたたみできます。 defer local</div>
+    <div class="legend">ノードをクリックすると詳細を展開／折りたたみできます。 defer d3load local</div>
     <div id="deficit" aria-live="polite"></div>
   </div>
   <svg id="chart" width="960" height="560" role="img" aria-label="階層型サンキーダイアグラム"></svg>
