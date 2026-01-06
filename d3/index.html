@@ -3,14 +3,12 @@
 <html lang="ja">
 <head>
   <meta charset="utf-8" />
-  <title>d3.csv＋階層型サンキーダイアグラム（クリック展開）</title>
+  <title>d3.csvParse＋階層型サンキーダイアグラム（ボタン展開）</title>
   <!-- D3 v7 -->
-  <script src="https://d3js.org/"></script>
-  <!-- d3-sankey v0.12.3（CDNJS） -->
-  https://cdnjs.cloudflare.com/ajax/libs/d3-sankey/0.12.3/d3-sankey.min.js</script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/d3-sankey/0.12.3/d3-sankey.min.js"></script>
   <style>
     body { font-family: "Noto Sans JP", "Segoe UI", sans-serif; margin: 24px; }
-    #header { margin-bottom: 12px; }
+    #controls { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; }
     #deficit { font-weight: 700; color: #b00020; }
     #chart { border: 1px solid #ddd; }
     .node rect { cursor: pointer; }
@@ -18,13 +16,19 @@
     .link { fill: none; stroke-opacity: 0.35; }
     .link:hover { stroke-opacity: 0.6; }
     .legend { font-size: 12px; color: #555; }
+    .error { color: #b00020; }
   </style>
 </head>
 <body>
-  <div id="header">
-    <div class="legend">ノードをクリックすると詳細を展開／折りたたみできます。</div>
-    <div id="deficit" aria-live="polite"></div>
+  <div id="controls">
+    <label for="file-input">CSV読み込み：</label>
+    <input id="file-input" type="file" accept=".csv,text/csv" />
+    <div class="legend">列は <code>Source,Target,Value</code>（ヘッダー必須）</div>
   </div>
+
+  <div id="deficit" aria-live="polite"></div>
+  <div id="msg" class="error" aria-live="polite"></div>
+
   <svg id="chart" width="960" height="560" role="img" aria-label="階層型サンキーダイアグラム"></svg>
 
 <script>
@@ -48,15 +52,18 @@ const colors = {
 };
 
 // 「費用合計」を構成するカテゴリ（レベル2）
+// ★必要に応じて自社の科目名に合わせて変更してください。
 const EXPENSE_CATS = ["人件費", "原材料", "その他費用"];
 
 // 折りたたみ状態（true=折りたたみ / false=展開）
 const collapsed = new Map();
-collapsed.set("売上", true);
-collapsed.set("費用合計", true);
-collapsed.set("人件費", true);
-collapsed.set("原材料", true);
-collapsed.set("その他費用", true);
+// 初期値は粗視化（売上・費用合計・各費用カテゴリを折りたたむ）
+function resetCollapsed() {
+  collapsed.clear();
+  collapsed.set("売上", true);
+  collapsed.set("費用合計", true);
+  EXPENSE_CATS.forEach(cat => collapsed.set(cat, true));
+}
 
 // SVGとsankey準備
 const svg = d3.select("#chart");
@@ -73,164 +80,211 @@ const sankey = d3.sankey()
 
 const linkPath = d3.sankeyLinkHorizontal();
 
+// 可変データ（CSV読み込み後に格納）
+let fullLinks = [];     // 最詳細のリンク（レベル3まで）
+let level2Links = [];   // 製品→費用カテゴリ
+let level3Links = [];   // 費用カテゴリ→詳細
+let aggregateLinks = []; // 売上→費用合計
+let totalRevenue = 0;
+let totalExpense = 0;
+
+// 階層関係（子ノード）を保持（クリック可能判定用）
+const childrenMap = new Map();
+function addChild(parent, child) {
+  const arr = childrenMap.get(parent) || [];
+  if (!arr.includes(child)) arr.push(child);
+  childrenMap.set(parent, arr);
+}
+function clearChildren() { childrenMap.clear(); }
+
 // ------------------------------------------------------------
-// CSV読込
+// CSVの読み込みボタン
 // ------------------------------------------------------------
-d3.csv("data.csv").then(rows => {
-  const fullLinks = rows.map(r => ({
-    source: r.Source,
-    target: r.Target,
-    value: +r.Value
+document.getElementById("file-input").addEventListener("change", async (e) => {
+  const file = e.target.files?.[0];
+  if (!file) return;
+
+  resetCollapsed();
+  clearChildren();
+  d3.select("#msg").text(""); // エラー表示クリア
+
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const text = reader.result;
+      const rows = d3.csvParse(text); // [{Source,Target,Value}, ...]
+      // バリデーション
+      const cols = rows.columns || Object.keys(rows[0] || {});
+      const required = ["Source", "Target", "Value"];
+      const missing = required.filter(c => !cols.includes(c));
+      if (missing.length) {
+        d3.select("#msg").text(`CSVヘッダーが不足：${missing.join(", ")}`);
+        return;
+      }
+
+      // 数値化・整形
+      fullLinks = rows.map(r => ({
+        source: r.Source,
+        target: r.Target,
+        value: +r.Value
+      })).filter(d => d.source && d.target && Number.isFinite(d.value) && d.value > 0);
+
+      // 製品（売上→製品のターゲット）
+      const productSet = new Set(fullLinks.filter(l => l.source === "売上").map(l => l.target));
+
+      // レベル2：製品→費用カテゴリ
+      level2Links = fullLinks.filter(l => productSet.has(l.source) && EXPENSE_CATS.includes(l.target));
+
+      // レベル3：カテゴリ→詳細
+      level3Links = fullLinks.filter(l => EXPENSE_CATS.includes(l.source));
+
+      // 集約リンク（売上→費用合計）
+      totalExpense = d3.sum(level2Links, d => d.value) || 0;
+      aggregateLinks = [{ source: "売上", target: "費用合計", value: totalExpense }];
+
+      // 売上合計（売上→製品の合計）
+      totalRevenue = d3.sum(fullLinks.filter(l => l.source === "売上"), d => d.value) || 0;
+
+      // 赤字（注記）
+      const deficit = Math.max(0, totalExpense - totalRevenue);
+      d3.select("#deficit").text(`現在の赤字：${deficit.toLocaleString()} 円`);
+
+      // 階層関係自動抽出
+      // 売上→製品
+      fullLinks.filter(l => l.source === "売上").forEach(l => addChild("売上", l.target));
+      // 費用合計→費用カテゴリ
+      EXPENSE_CATS.forEach(cat => addChild("費用合計", cat));
+      // 費用カテゴリ→詳細
+      level3Links.forEach(l => addChild(l.source, l.target));
+
+      update(); // 描画
+    } catch (err) {
+      console.error(err);
+      d3.select("#msg").text(`CSVの解析に失敗しました：${String(err)}`);
+    }
+  };
+  reader.readAsText(file, "utf-8");
+});
+
+// ------------------------------------------------------------
+// 可視グラフ生成（折りたたみ状態に応じてリンクをフィルタ）
+// ------------------------------------------------------------
+function computeVisibleGraph() {
+  const showExpenseAggregate = collapsed.get("費用合計") === true;
+  const showSalesAggregate   = collapsed.get("売上") === true;
+
+  let links = [];
+
+  if (showExpenseAggregate) {
+    // 粗視化：売上→費用合計
+    links = links.concat(aggregateLinks);
+  } else {
+    // レベル2：製品→費用内訳
+    links = links.concat(level2Links);
+
+    // レベル3：カテゴリが展開されている場合のみ追加
+    EXPENSE_CATS.forEach(cat => {
+      if (collapsed.get(cat) === false) {
+        links = links.concat(level3Links.filter(l => l.source === cat));
+      }
+    });
+  }
+
+  // 売上→製品構成（売上が展開されている場合のみ）
+  if (!showSalesAggregate) {
+    links = links.concat(fullLinks.filter(l => l.source === "売上"));
+  }
+
+  // ノード集合
+  const nodeNames = new Set();
+  links.forEach(l => { nodeNames.add(l.source); nodeNames.add(l.target); });
+  if (showExpenseAggregate) nodeNames.add("費用合計"); // 集約時は明示的に追加
+
+  const nodes = Array.from(nodeNames).map(name => ({
+    name,
+    color: colors[name] || "#607D8B"
   }));
 
-  // 製品（売上→製品のターゲット）
-  const productSet = new Set(
-    fullLinks.filter(l => l.source === "売上").map(l => l.target)
-  );
-  // レベル2（製品→費用カテゴリ）
-  const level2Links = fullLinks.filter(l =>
-    productSet.has(l.source) && EXPENSE_CATS.includes(l.target)
-  );
-  // レベル3（費用カテゴリ→詳細）
-  const level3Links = fullLinks.filter(l => EXPENSE_CATS.includes(l.source));
+  return { nodes, links };
+}
 
-  // 集約リンク（売上→費用合計）
-  const totalExpense = d3.sum(level2Links, d => d.value) || 0;
-  const aggregateLinks = [{ source: "売上", target: "費用合計", value: totalExpense }];
-
-  // 売上合計（売上→製品の合計）
-  const totalRevenue = d3.sum(fullLinks.filter(l => l.source === "売上"), d => d.value) || 0;
-
-  // 赤字（注記）
-  const deficit = Math.max(0, totalExpense - totalRevenue);
-  d3.select("#deficit").text(`現在の赤字：${deficit.toLocaleString()} 円`);
-
-  // 階層関係を自動抽出（クリック可能判定にも使用）
-  const childrenMap = new Map();
-  function addChild(parent, child) {
-    const arr = childrenMap.get(parent) || [];
-    if (!arr.includes(child)) arr.push(child);
-    childrenMap.set(parent, arr);
-  }
-  // 売上→製品
-  fullLinks.filter(l => l.source === "売上").forEach(l => addChild("売上", l.target));
-  // 費用合計→費用カテゴリ
-  EXPENSE_CATS.forEach(cat => addChild("費用合計", cat));
-  // 費用カテゴリ→詳細
-  level3Links.forEach(l => addChild(l.source, l.target));
-
-  // 描画更新
-  function update() {
-    const showExpenseAggregate = collapsed.get("費用合計") === true;
-    const showSalesAggregate   = collapsed.get("売上") === true;
-
-    let links = [];
-
-    if (showExpenseAggregate) {
-      // 粗視化：売上→費用合計
-      links = links.concat(aggregateLinks);
-    } else {
-      // レベル2：製品→費用内訳
-      links = links.concat(level2Links);
-
-      // レベル3：カテゴリが展開されているときのみ追加
-      EXPENSE_CATS.forEach(cat => {
-        if (collapsed.get(cat) === false) {
-          links = links.concat(level3Links.filter(l => l.source === cat));
-        }
-      });
-    }
-
-    // 売上→製品構成（売上が展開されている場合のみ）
-    if (!showSalesAggregate) {
-      links = links.concat(fullLinks.filter(l => l.source === "売上"));
-    }
-
-    // ノード
-    const nodeNames = new Set();
-    links.forEach(l => { nodeNames.add(l.source); nodeNames.add(l.target); });
-    // 「費用合計」は集約表示時に必要
-    if (showExpenseAggregate) nodeNames.add("費用合計");
-
-    const nodes = Array.from(nodeNames).map(name => ({
-      name,
-      color: colors[name] || "#607D8B"
-    }));
-
-    const layout = sankey({
-      nodes: nodes.map(d => Object.assign({}, d)),
-      links: links.map(d => Object.assign({}, d))
-    });
-
-    // Links
-    const linksSel = g.selectAll(".link").data(layout.links, d => d.index);
-    linksSel.exit().remove();
-    const linksEnter = linksSel.enter()
-      .append("path")
-      .attr("class", "link")
-      .attr("d", linkPath)
-      .style("stroke", d => d.source.color || "#888")
-      .style("stroke-width", d => Math.max(1, d.width));
-    linksSel.merge(linksEnter)
-      .transition().duration(350)
-      .attr("d", linkPath)
-      .style("stroke-width", d => Math.max(1, d.width));
-
-    // Nodes
-    const nodesSel = g.selectAll(".node").data(layout.nodes, d => d.name);
-    nodesSel.exit().remove();
-    const nodesEnter = nodesSel.enter()
-      .append("g")
-      .attr("class", "node");
-
-    nodesEnter.append("rect")
-      .attr("rx", 3).attr("ry", 3)
-      .attr("fill", d => d.color || "#607D8B")
-      .on("click", (event, d) => {
-        // クリック可能か（子を持つか、売上/費用合計か）
-        const hasChildren =
-          (childrenMap.get(d.name) && childrenMap.get(d.name).length > 0) ||
-          d.name === "売上" || d.name === "費用合計";
-        if (!hasChildren) return;
-
-        const curr = collapsed.get(d.name);
-        collapsed.set(d.name, !curr);
-        update();
-      })
-      .append("title")
-      .text(d => d.name);
-
-    nodesEnter.append("text")
-      .attr("dy", "0.35em")
-      .attr("text-anchor", d => d.x0 < innerW / 2 ? "start" : "end")
-      .text(d => d.name);
-
-    const nodesMerged = nodesSel.merge(nodesEnter);
-    nodesMerged.select("rect")
-      .transition().duration(350)
-      .attr("x", d => d.x0).attr("y", d => d.y0)
-      .attr("width", d => d.x1 - d.x0)
-      .attr("height", d => Math.max(1, d.y1 - d.y0));
-
-    nodesMerged.select("text")
-      .transition().duration(350)
-      .attr("x", d => (d.x0 < innerW / 2) ? (d.x1 + 6) : (d.x0 - 6))
-      .attr("y", d => (d.y0 + d.y1) / 2);
-  }
-
-  update();
-
-  // リサイズ対応
-  window.addEventListener("resize", () => {
-    const { width, height } = svg.node().getBoundingClientRect();
-    const innerW2 = width - margin.left - margin.right;
-    const innerH2 = height - margin.top - margin.bottom;
-    sankey.extent([[0, 0], [innerW2, innerH2]]);
-    update();
+// ------------------------------------------------------------
+// 描画
+// ------------------------------------------------------------
+function update() {
+  const graph = computeVisibleGraph();
+  const layout = sankey({
+    nodes: graph.nodes.map(d => Object.assign({}, d)),
+    links: graph.links.map(d => Object.assign({}, d))
   });
-}).catch(err => {
-  console.error("CSV読み込みエラー:", err);
+
+  // Links
+  const linksSel = g.selectAll(".link").data(layout.links, d => d.index);
+  linksSel.exit().remove();
+  const linksEnter = linksSel.enter()
+    .append("path")
+    .attr("class", "link")
+    .attr("d", linkPath)
+    .style("stroke", d => d.source.color || "#888")
+    .style("stroke-width", d => Math.max(1, d.width));
+  linksSel.merge(linksEnter)
+    .transition().duration(350)
+    .attr("d", linkPath)
+    .style("stroke-width", d => Math.max(1, d.width));
+
+  // Nodes
+  const nodesSel = g.selectAll(".node").data(layout.nodes, d => d.name);
+  nodesSel.exit().remove();
+  const nodesEnter = nodesSel.enter()
+    .append("g")
+    .attr("class", "node");
+
+  nodesEnter.append("rect")
+    .attr("rx", 3).attr("ry", 3)
+    .attr("fill", d => d.color || "#607D8B")
+    .on("click", (event, d) => {
+      // クリック可能か（子を持つか、売上/費用合計か）
+      const hasChildren =
+        (childrenMap.get(d.name) && childrenMap.get(d.name).length > 0) ||
+        d.name === "売上" || d.name === "費用合計";
+      if (!hasChildren) return;
+
+      const curr = collapsed.get(d.name);
+      collapsed.set(d.name, !curr);
+      update();
+    })
+    .append("title")
+    .text(d => d.name);
+
+  nodesEnter.append("text")
+    .attr("dy", "0.35em")
+    .attr("text-anchor", d => d.x0 < innerW / 2 ? "start" : "end")
+    .text(d => d.name);
+
+  const nodesMerged = nodesSel.merge(nodesEnter);
+  nodesMerged.select("rect")
+    .transition().duration(350)
+    .attr("x", d => d.x0).attr("y", d => d.y0)
+    .attr("width", d => d.x1 - d.x0)
+    .attr("height", d => Math.max(1, d.y1 - d.y0));
+
+  nodesMerged.select("text")
+    .transition().duration(350)
+    .attr("x", d => (d.x0 < innerW / 2) ? (d.x1 + 6) : (d.x0 - 6))
+    .attr("y", d => (d.y0 + d.y1) / 2);
+}
+
+// リサイズ対応
+window.addEventListener("resize", () => {
+  const { width, height } = svg.node().getBoundingClientRect();
+  const innerW2 = width - margin.left - margin.right;
+  const innerH2 = height - margin.top - margin.bottom;
+  sankey.extent([[0, 0], [innerW2, innerH2]]);
+  update();
 });
+
+// 初期化（読み込み前は空の状態）
+resetCollapsed();
 </script>
 </body>
 </html>
